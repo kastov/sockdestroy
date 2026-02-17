@@ -1,6 +1,6 @@
 {
   "name": "sockdestroy",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Native Node.js binding for killing TCP sockets via Linux netlink SOCK_DESTROY (ss -K equivalent)",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
