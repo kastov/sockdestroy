@@ -34,5 +34,5 @@ echo "==> Done! Prebuilds:"
 find prebuilds -type f
 echo ""
 echo "Structure should look like:"
-echo "  prebuilds/linux-x64/node.napi.node"
-echo "  prebuilds/linux-arm64/node.napi.node"
+echo "  prebuilds/linux-x64/sockdestroy.node"
+echo "  prebuilds/linux-arm64/sockdestroy.node"

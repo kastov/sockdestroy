@@ -16,9 +16,14 @@
                 "-fstack-protector-strong",
                 "-Wformat=2",
                 "-Werror=format-security",
-                "-fvisibility=hidden"
+                "-fvisibility=hidden",
             ],
-            "ldflags": ["-Wl,-z,relro", "-Wl,-z,now", "-Wl,-z,noexecstack","-Wl,-z,defs","-Wl,--as-needed"],
+            "ldflags": [
+                "-Wl,-z,relro",
+                "-Wl,-z,now",
+                "-Wl,-z,noexecstack",
+                "-Wl,--as-needed",
+            ],
             "conditions": [["OS!='linux'", {"defines": ["UNSUPPORTED_PLATFORM"]}]],
         }
     ]

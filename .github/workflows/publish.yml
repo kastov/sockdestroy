@@ -70,8 +70,8 @@ jobs:
         run: |
           echo "Prebuilds:"
           find prebuilds -type f
-          test -f prebuilds/linux-x64/node.napi.node || { echo "Missing linux-x64 prebuild"; exit 1; }
-          test -f prebuilds/linux-arm64/node.napi.node || { echo "Missing linux-arm64 prebuild"; exit 1; }
+          test -f prebuilds/linux-x64/sockdestroy.node || { echo "Missing linux-x64 prebuild"; exit 1; }
+          test -f prebuilds/linux-arm64/sockdestroy.node || { echo "Missing linux-arm64 prebuild"; exit 1; }
 
       - name: Install dependencies
         run: npm install --ignore-scripts
