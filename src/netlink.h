@@ -1,5 +1,5 @@
-#ifndef SS_BINDING_NETLINK_H
-#define SS_BINDING_NETLINK_H
+#ifndef SOCKDESTROY_NETLINK_H
+#define SOCKDESTROY_NETLINK_H
 
 #ifdef UNSUPPORTED_PLATFORM
 
@@ -14,6 +14,7 @@ typedef struct { int fd; uint32_t seq; } netlink_sock_t;
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <linux/netlink.h>
+#include <linux/inet_diag.h>
 
 /* Netlink SOCK_DIAG protocol */
 #ifndef NETLINK_SOCK_DIAG
@@ -21,18 +22,33 @@ typedef struct { int fd; uint32_t seq; } netlink_sock_t;
 #endif
 
 /* Message types */
+#ifndef SOCK_DIAG_BY_FAMILY  /* provided by <linux/sock_diag.h> via <linux/inet_diag.h> */
 #define SOCK_DIAG_BY_FAMILY 20
-#define SOCK_DESTROY_SOCK   21   /* avoid conflict with any existing SOCK_DESTROY macro */
+#endif
+#define SOCK_DESTROY_SOCK   21   /* our name; kernel defines SOCK_DESTROY=21 as enum in linux/sock_diag.h */
 
-/* Bytecode filter ops */
-#define INET_DIAG_BC_NOP      0
+/* Bytecode filter ops — provided by <linux/inet_diag.h>; fallbacks for older headers */
+#ifndef INET_DIAG_BC_JMP
 #define INET_DIAG_BC_JMP      1
+#endif
+#ifndef INET_DIAG_BC_S_COND
 #define INET_DIAG_BC_S_COND   7
+#endif
+#ifndef INET_DIAG_BC_D_COND
 #define INET_DIAG_BC_D_COND   8
+#endif
 
-/* Inet diag request attribute types */
-#define INET_DIAG_REQ_NONE      0
+/* Inet diag request attribute type — provided by <linux/inet_diag.h>; fallback for older headers */
+#ifndef INET_DIAG_REQ_BYTECODE
 #define INET_DIAG_REQ_BYTECODE  1
+#endif
+
+/* Buffer and timeout constants */
+#define NETLINK_MAX_RECV_RETRIES 3    /* max sequence-retry attempts in netlink_recv_expected */
+#define NETLINK_RECV_TIMEOUT_SEC 3    /* SO_RCVTIMEO for dump and kill sockets */
+#define NETLINK_ACK_BUF_SIZE     256  /* ACK response buffer in destroy_one_socket */
+#define INET_DIAG_BC_MAX_LEN     256  /* max bytecode filter length */
+#define INET_DIAG_REQ_MAX_LEN    512  /* max dump request buffer length */
 
 /* TCP states bitmask — all states (ESTABLISHED, TIME_WAIT, CLOSE_WAIT, etc.) */
 #define TCPF_ALL (~0U)
@@ -83,9 +99,6 @@ typedef struct { int fd; uint32_t seq; } netlink_sock_t;
 #ifndef NLMSG_HDRLEN
 #define NLMSG_HDRLEN ((int)NLMSG_ALIGN(sizeof(struct nlmsghdr)))
 #endif
-#ifndef NLMSG_LENGTH
-#define NLMSG_LENGTH(len) ((len) + NLMSG_HDRLEN)
-#endif
 #ifndef NLMSG_DATA
 #define NLMSG_DATA(nlh) ((void*)(((char*)(nlh)) + NLMSG_HDRLEN))
 #endif
@@ -113,59 +126,6 @@ typedef struct { int fd; uint32_t seq; } netlink_sock_t;
 
 /* nlattr is provided by <linux/netlink.h> */
 
-/* inet_diag_sockid — identifies a specific socket */
-struct inet_diag_sockid {
-    uint16_t idiag_sport;     /* source port (network byte order) */
-    uint16_t idiag_dport;     /* destination port (network byte order) */
-    uint32_t idiag_src[4];    /* source address */
-    uint32_t idiag_dst[4];    /* destination address */
-    uint32_t idiag_if;        /* interface index */
-    uint32_t idiag_cookie[2]; /* socket cookie (kernel opaque) */
-};
-
-#define INET_DIAG_NOCOOKIE (~0U)
-
-/* inet_diag_req_v2 — request structure for SOCK_DIAG_BY_FAMILY and SOCK_DESTROY */
-struct inet_diag_req_v2 {
-    uint8_t  sdiag_family;
-    uint8_t  sdiag_protocol;
-    uint8_t  idiag_ext;
-    uint8_t  pad;
-    uint32_t idiag_states;
-    struct inet_diag_sockid id;
-};
-
-/* inet_diag_msg — response from kernel for each matched socket */
-struct inet_diag_msg {
-    uint8_t  idiag_family;
-    uint8_t  idiag_state;
-    uint8_t  idiag_timer;
-    uint8_t  idiag_retrans;
-    struct inet_diag_sockid id;
-    uint32_t idiag_expires;
-    uint32_t idiag_rqueue;
-    uint32_t idiag_wqueue;
-    uint32_t idiag_uid;
-    uint32_t idiag_inode;
-};
-
-/* Bytecode filter operation */
-struct inet_diag_bc_op {
-    uint8_t  code;
-    uint8_t  yes;
-    uint16_t no;
-};
-
-/* Host condition for bytecode filter (S_COND / D_COND) */
-struct inet_diag_hostcond {
-    uint8_t  family;
-    uint8_t  prefix_len;
-    int      port;       /* -1 = any port */
-    uint32_t addr[];     /* flexible array: 1 elem for IPv4, 4 for IPv6 */
-};
-
-/* nlmsgerr is provided by <linux/netlink.h> */
-
 /* Netlink socket wrapper */
 typedef struct {
     int fd;
@@ -190,4 +150,4 @@ ssize_t netlink_recv(netlink_sock_t *ns, void *buf, size_t buflen);
 ssize_t netlink_recv_expected(netlink_sock_t *ns, void *buf, size_t buflen, uint32_t expected_seq);
 
 #endif /* UNSUPPORTED_PLATFORM */
-#endif /* SS_BINDING_NETLINK_H */
+#endif /* SOCKDESTROY_NETLINK_H */

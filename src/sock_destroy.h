@@ -1,7 +1,10 @@
-#ifndef SS_BINDING_SOCK_DESTROY_H
-#define SS_BINDING_SOCK_DESTROY_H
+#ifndef SOCKDESTROY_SOCK_DESTROY_H
+#define SOCKDESTROY_SOCK_DESTROY_H
 
 #include <stdint.h>
+
+/* Error message buffer size for kill_result_t */
+#define KILL_ERROR_MSG_SIZE 256
 
 /* Filter mode */
 #define KILL_MODE_OR  0   /* Kill sockets matching src OR dst (default) */
@@ -13,7 +16,7 @@ typedef struct {
     int found;               /* number of sockets found matching the filter */
     int first_destroy_errno; /* first non-zero errno from SOCK_DESTROY, 0 if all succeeded or none attempted */
     int error_code;          /* 0 on success, errno on failure */
-    char error_msg[256];     /* human-readable error message */
+    char error_msg[KILL_ERROR_MSG_SIZE]; /* human-readable error message */
 } kill_result_t;
 
 /*
@@ -35,4 +38,4 @@ int kill_sockets(const char *src_ip, const char *dst_ip, int mode, kill_result_t
  */
 int has_cap_net_admin(void);
 
-#endif /* SS_BINDING_SOCK_DESTROY_H */
+#endif /* SOCKDESTROY_SOCK_DESTROY_H */
