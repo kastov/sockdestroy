@@ -3,6 +3,8 @@ export class KillError extends Error {
   name: 'KillError';
   /** System errno code, or 0 if not applicable */
   errno: number | string;
+  /** String error code (Node.js convention). Set when errno is a string identifier, null otherwise. */
+  code: string | null;
   constructor(message: string, errno: number | string);
 }
 
@@ -36,6 +38,7 @@ export interface KillFilter {
  * At least one of `src` or `dst` must be provided.
  * Requires CAP_NET_ADMIN capability (or root).
  * Linux only (kernel >= 4.5 with CONFIG_INET_DIAG_DESTROY=y).
+ * **Warning:** Scans all TCP states including LISTEN. A `src` filter matching a server's bind address may destroy its listen socket.
  *
  * @param filter - Object with src and/or dst IP addresses and optional mode
  * @returns Promise resolving to KillResult with killed/found counts and first destroy errno
