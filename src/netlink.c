@@ -151,7 +151,7 @@ static int netlink_fill_batch(netlink_sock_t *ns, size_t buflen) {
 
     int recv_count;
     do {
-        recv_count = recvmmsg(ns->fd, recv_msgs, NETLINK_RECV_BATCH_VLEN, 0, NULL);
+        recv_count = recvmmsg(ns->fd, recv_msgs, NETLINK_RECV_BATCH_VLEN, MSG_WAITFORONE, NULL);
     } while (recv_count < 0 && errno == EINTR);
 
     if (recv_count < 0)
