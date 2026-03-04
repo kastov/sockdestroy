@@ -1,0 +1,25 @@
+FROM node:24-alpine AS builder
+
+RUN apk add --no-cache python3 make g++ linux-headers
+
+WORKDIR /pkg
+
+COPY package.json binding.gyp ./
+COPY src/ src/
+
+RUN npm install --ignore-scripts
+RUN npx prebuildify --napi --strip
+
+# Test stage — uses the prebuild from builder
+FROM node:24-alpine
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --ignore-scripts
+
+COPY --from=builder /pkg/prebuilds/ prebuilds/
+COPY lib/ lib/
+COPY test/ test/
+
+CMD ["sh", "-c", "node --test test/test.mjs && node --test test/integration.mjs && node test/benchmark.mjs"]

@@ -1,0 +1,55 @@
+name: Test & Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Run unit tests
+        run: node --test test/test.mjs
+
+  integration-and-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build test image (prebuild + test stage)
+        run: docker build -f Dockerfile.test -t sockdestroy-test .
+
+      - name: Run integration tests
+        run: |
+          docker run --privileged --rm sockdestroy-test \
+            sh -c "node --test test/integration.mjs"
+
+      - name: Run benchmark
+        run: |
+          docker run --privileged --rm sockdestroy-test \
+            sh -c "node test/benchmark.mjs" | tee benchmark-output.txt
+
+      - name: Post benchmark to summary
+        if: always()
+        run: |
+          if [ -f benchmark-output.txt ]; then
+            echo '## Benchmark Results' >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat benchmark-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi

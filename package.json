@@ -27,6 +27,9 @@
     "build": "node-gyp rebuild",
     "rebuild": "node-gyp rebuild",
     "test": "node --test test/test.mjs",
+    "test:integration": "node --test test/integration.mjs",
+    "test:benchmark": "node test/benchmark.mjs",
+    "test:all": "node --test test/test.mjs && node --test test/integration.mjs && node test/benchmark.mjs",
     "prebuild:all": "./prebuild-all.sh"
   },
   "dependencies": {
