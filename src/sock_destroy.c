@@ -13,8 +13,62 @@
 #include <linux/capability.h>
 
 /* Receive buffer size */
-#define RECV_BUF_SIZE (32 * 1024)
+#define RECV_BUF_SIZE (64 * 1024)
 #define RECV_BUF_MAX  (256 * 1024)
+
+/* Fallback TCP state IDs for environments where headers do not expose them.
+ * Values follow Linux enum tcp_state in include/net/tcp_states.h. */
+#ifndef TCP_ESTABLISHED
+#define TCP_ESTABLISHED 1
+#endif
+#ifndef TCP_SYN_SENT
+#define TCP_SYN_SENT 2
+#endif
+#ifndef TCP_SYN_RECV
+#define TCP_SYN_RECV 3
+#endif
+#ifndef TCP_FIN_WAIT1
+#define TCP_FIN_WAIT1 4
+#endif
+#ifndef TCP_FIN_WAIT2
+#define TCP_FIN_WAIT2 5
+#endif
+#ifndef TCP_TIME_WAIT
+#define TCP_TIME_WAIT 6
+#endif
+#ifndef TCP_CLOSE
+#define TCP_CLOSE 7
+#endif
+#ifndef TCP_CLOSE_WAIT
+#define TCP_CLOSE_WAIT 8
+#endif
+#ifndef TCP_LAST_ACK
+#define TCP_LAST_ACK 9
+#endif
+#ifndef TCP_LISTEN
+#define TCP_LISTEN 10
+#endif
+#ifndef TCP_CLOSING
+#define TCP_CLOSING 11
+#endif
+
+#define TCP_STATE_BIT(s) (1U << (s))
+/* Active connection states for user-facing "drop active connections" behavior.
+ * Deliberately excludes LISTEN/CLOSE/TIME_WAIT. */
+#define TCPF_ACTIVE_STATES_BASE ( \
+    TCP_STATE_BIT(TCP_ESTABLISHED) | \
+    TCP_STATE_BIT(TCP_SYN_SENT) | \
+    TCP_STATE_BIT(TCP_SYN_RECV) | \
+    TCP_STATE_BIT(TCP_FIN_WAIT1) | \
+    TCP_STATE_BIT(TCP_FIN_WAIT2) | \
+    TCP_STATE_BIT(TCP_CLOSE_WAIT) | \
+    TCP_STATE_BIT(TCP_LAST_ACK) | \
+    TCP_STATE_BIT(TCP_CLOSING))
+#ifdef TCP_NEW_SYN_RECV
+#define TCPF_ACTIVE_STATES (TCPF_ACTIVE_STATES_BASE | TCP_STATE_BIT(TCP_NEW_SYN_RECV))
+#else
+#define TCPF_ACTIVE_STATES TCPF_ACTIVE_STATES_BASE
+#endif
 
 /* Apply NETLINK_RECV_TIMEOUT_SEC as SO_RCVTIMEO on a netlink socket fd.
  * On error, fills result->error_code / error_msg and returns -1. */
@@ -256,7 +310,7 @@ static int dump_and_destroy(
 
     r->sdiag_family = (uint8_t)family;
     r->sdiag_protocol = IPPROTO_TCP;
-    r->idiag_states = TCPF_ALL;
+    r->idiag_states = TCPF_ACTIVE_STATES;
     /* id left zeroed for dump */
 
     int payload_len = sizeof(struct inet_diag_req_v2);

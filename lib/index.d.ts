@@ -38,7 +38,7 @@ export interface KillFilter {
  * At least one of `src` or `dst` must be provided.
  * Requires CAP_NET_ADMIN capability (or root).
  * Linux only (kernel >= 4.5 with CONFIG_INET_DIAG_DESTROY=y).
- * **Warning:** Scans all TCP states including LISTEN. A `src` filter matching a server's bind address may destroy its listen socket.
+ * Scans active TCP connection states (not LISTEN/CLOSE/TIME_WAIT).
  *
  * @param filter - Object with src and/or dst IP addresses and optional mode
  * @returns Promise resolving to KillResult with killed/found counts and first destroy errno

@@ -49,9 +49,7 @@ typedef struct { int fd; uint32_t seq; } netlink_sock_t;
 #define NETLINK_ACK_BUF_SIZE     256  /* ACK response buffer in destroy_one_socket */
 #define INET_DIAG_BC_MAX_LEN     256  /* max bytecode filter length */
 #define INET_DIAG_REQ_MAX_LEN    512  /* max dump request buffer length */
-
-/* TCP states bitmask — all states (ESTABLISHED, TIME_WAIT, CLOSE_WAIT, etc.) */
-#define TCPF_ALL (~0U)
+#define NETLINK_RECV_BATCH_VLEN  8    /* recvmmsg batch size for dump path */
 
 /* Address families */
 #ifndef AF_INET
@@ -130,6 +128,11 @@ typedef struct { int fd; uint32_t seq; } netlink_sock_t;
 typedef struct {
     int fd;
     uint32_t seq;
+    uint8_t *batch_buf;      /* internal recvmmsg storage, reused across calls */
+    size_t batch_buflen;     /* per-message capacity in batch_buf */
+    ssize_t batch_lens[NETLINK_RECV_BATCH_VLEN];
+    int batch_count;
+    int batch_index;
 } netlink_sock_t;
 
 /* Open a NETLINK_SOCK_DIAG socket. Returns 0 on success, -errno on error. */
