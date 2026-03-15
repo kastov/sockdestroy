@@ -16,6 +16,12 @@
 #define RECV_BUF_SIZE (64 * 1024)
 #define RECV_BUF_MAX  (256 * 1024)
 
+/* Maximum SOCK_DESTROY requests per pipeline batch.
+ * Prevents kernel-side ACK buffer overflow (netlink_overrun) when
+ * destroying thousands of sockets. 256 * ~400 bytes/ACK = ~100KB,
+ * fits within default net.core.rmem_default (212992) with 2x headroom. */
+#define DESTROY_BATCH_SIZE 256
+
 /* Fallback TCP state IDs for environments where headers do not expose them.
  * Values follow Linux enum tcp_state in include/net/tcp_states.h. */
 #ifndef TCP_ESTABLISHED
@@ -217,43 +223,106 @@ static int build_bytecode(
     return total;
 }
 
-/* Send SOCK_DESTROY for a single socket identified by inet_diag_msg */
-static int destroy_one_socket(netlink_sock_t *kill_sock, const struct inet_diag_msg *diag_msg, int protocol) {
-    struct {
-        struct nlmsghdr nlh;
-        struct inet_diag_req_v2 r;
-    } req;
+/* Pending socket descriptor for pipelined destruction */
+typedef struct {
+    uint8_t family;
+    struct inet_diag_sockid id;
+} pending_destroy_t;
 
-    memset(&req, 0, sizeof(req));
-    req.nlh.nlmsg_len = sizeof(req);
-    req.nlh.nlmsg_type = SOCK_DESTROY_SOCK;
-    req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+/* sendmmsg sub-batch size — keep stack arrays small (~1.5KB total) */
+#define SENDMMSG_VLEN 8
 
-    req.r.sdiag_family = diag_msg->idiag_family;
-    req.r.sdiag_protocol = (uint8_t)protocol;
-    req.r.id = diag_msg->id;
+/* Pipelined destroy: send all SOCK_DESTROY via sendmmsg, then drain ACKs.
+ * Returns 0 on success. Sets *out_killed and *out_first_destroy_errno. */
+static int destroy_pending_sockets(
+    netlink_sock_t *kill_sock,
+    const pending_destroy_t *pending, int count,
+    int *out_killed, int *out_first_destroy_errno
+) {
+    /* Buffer >= NETLINK_BATCH_MIN_BUFLEN (1024) to enable recvmmsg batch path */
+    uint8_t drain_buf[1024];
 
-    int err = netlink_send(kill_sock, &req.nlh);
-    if (err < 0)
-        return err;
+    int offset = 0;
+    while (offset < count) {
+        int batch_size = count - offset;
+        if (batch_size > DESTROY_BATCH_SIZE)
+            batch_size = DESTROY_BATCH_SIZE;
 
-    /* Read ACK/error response — match sequence number */
-    char ack_buf[NETLINK_ACK_BUF_SIZE];
-    ssize_t len = netlink_recv_expected(kill_sock, ack_buf, sizeof(ack_buf), req.nlh.nlmsg_seq);
-    if (len < 0)
-        return (int)len;
+        /* Phase 1: Send batch via sendmmsg sub-batches */
+        int sent = 0;
+        while (sent < batch_size) {
+            int chunk = batch_size - sent;
+            if (chunk > SENDMMSG_VLEN)
+                chunk = SENDMMSG_VLEN;
 
-    struct nlmsghdr *ack_nlh = (struct nlmsghdr *)ack_buf;
-    if (!NLMSG_OK(ack_nlh, (int)len))
-        return -EBADMSG;
+            struct {
+                struct nlmsghdr nlh;
+                struct inet_diag_req_v2 r;
+            } reqs[SENDMMSG_VLEN];
+            struct iovec iovs[SENDMMSG_VLEN];
+            struct mmsghdr msgs[SENDMMSG_VLEN];
+            struct sockaddr_nl dst;
 
-    if (ack_nlh->nlmsg_type == NLMSG_ERROR) {
-        struct nlmsgerr *nlerr = (struct nlmsgerr *)NLMSG_DATA(ack_nlh);
-        if (nlerr->error == 0)
-            return 0; /* Success ACK */
-        if (nlerr->error == -ENOENT)
-            return 1; /* Socket already gone — skip silently */
-        return nlerr->error; /* e.g. -EPERM, -EOPNOTSUPP → captured in first_destroy_errno */
+            memset(&dst, 0, sizeof(dst));
+            dst.nl_family = AF_NETLINK;
+
+            for (int i = 0; i < chunk; i++) {
+                memset(&reqs[i], 0, sizeof(reqs[i]));
+                reqs[i].nlh.nlmsg_len = sizeof(reqs[i]);
+                reqs[i].nlh.nlmsg_type = SOCK_DESTROY_SOCK;
+                reqs[i].nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+                reqs[i].nlh.nlmsg_seq = ++kill_sock->seq;
+                reqs[i].r.sdiag_family = pending[offset + sent + i].family;
+                reqs[i].r.sdiag_protocol = IPPROTO_TCP;
+                reqs[i].r.id = pending[offset + sent + i].id;
+
+                iovs[i].iov_base = &reqs[i];
+                iovs[i].iov_len = sizeof(reqs[i]);
+
+                memset(&msgs[i], 0, sizeof(msgs[i]));
+                msgs[i].msg_hdr.msg_name = &dst;
+                msgs[i].msg_hdr.msg_namelen = sizeof(dst);
+                msgs[i].msg_hdr.msg_iov = &iovs[i];
+                msgs[i].msg_hdr.msg_iovlen = 1;
+            }
+
+            int ret;
+            do {
+                ret = sendmmsg(kill_sock->fd, msgs, (unsigned int)chunk, 0);
+            } while (ret < 0 && errno == EINTR);
+
+            if (ret < 0)
+                break;
+            sent += ret;
+            if (ret < chunk)
+                break; /* partial send — stop */
+        }
+
+        /* Phase 2: Drain exactly `sent` ACKs for this batch */
+        for (int i = 0; i < sent; i++) {
+            ssize_t len = netlink_recv(kill_sock, drain_buf, sizeof(drain_buf));
+            if (len < 0)
+                break;
+
+            struct nlmsghdr *ack_nlh = (struct nlmsghdr *)drain_buf;
+            if (!NLMSG_OK(ack_nlh, (int)len))
+                continue;
+
+            if (ack_nlh->nlmsg_type == NLMSG_ERROR) {
+                struct nlmsgerr *nlerr = (struct nlmsgerr *)NLMSG_DATA(ack_nlh);
+                if (nlerr->error == 0) {
+                    (*out_killed)++;
+                } else if (nlerr->error == -ENOENT) {
+                    /* Socket already gone — skip silently */
+                } else if (*out_first_destroy_errno == 0) {
+                    *out_first_destroy_errno = -nlerr->error;
+                }
+            }
+        }
+
+        offset += sent;
+        if (sent < batch_size)
+            break; /* Send error mid-batch — stop pipeline */
     }
 
     return 0;
@@ -339,8 +408,10 @@ static int dump_and_destroy(
 
     /* Receive and process dump responses */
     int done = 0;
-    int killed = 0;
     int found = 0;
+    pending_destroy_t *pending = NULL;
+    int pending_count = 0;
+    int pending_cap = 0;
 
     while (!done) {
         ssize_t len = netlink_recv(dump_sock, *recv_buf, *recv_buf_size);
@@ -349,6 +420,7 @@ static int dump_and_destroy(
             size_t new_size = *recv_buf_size * 2;
             if (new_size > RECV_BUF_MAX) {
                 /* Give up */
+                free(pending);
                 *out_error_code = EMSGSIZE;
                 snprintf(out_error_msg, error_msg_size,
                          "Netlink message too large (>256KB)");
@@ -356,6 +428,7 @@ static int dump_and_destroy(
             }
             uint8_t *new_buf = realloc(*recv_buf, new_size);
             if (!new_buf) {
+                free(pending);
                 *out_error_code = ENOMEM;
                 snprintf(out_error_msg, error_msg_size,
                          "Failed to reallocate receive buffer");
@@ -367,6 +440,7 @@ static int dump_and_destroy(
             continue;  /* retry with larger buffer */
         }
         if (len < 0) {
+            free(pending);
             *out_error_code = (int)(-len);
             snprintf(out_error_msg, error_msg_size,
                      "Failed to receive dump response: %s", strerror((int)(-len)));
@@ -389,6 +463,7 @@ static int dump_and_destroy(
             if (resp_nlh->nlmsg_type == NLMSG_ERROR) {
                 struct nlmsgerr *nlerr = (struct nlmsgerr *)NLMSG_DATA(resp_nlh);
                 if (nlerr->error != 0) {
+                    free(pending);
                     *out_error_code = -nlerr->error;
                     snprintf(out_error_msg, error_msg_size,
                              "Dump error: %s", strerror(-nlerr->error));
@@ -400,20 +475,37 @@ static int dump_and_destroy(
             if (resp_nlh->nlmsg_type != SOCK_DIAG_BY_FAMILY)
                 continue;
 
-            /* Got a socket — destroy it */
+            /* Got a socket — collect it for pipelined destruction */
             struct inet_diag_msg *diag_msg = (struct inet_diag_msg *)NLMSG_DATA(resp_nlh);
             found++;
-            int ret = destroy_one_socket(kill_sock, diag_msg, IPPROTO_TCP);
-            if (ret == 0)
-                killed++;
-            else if (ret < 0 && *out_first_destroy_errno == 0)
-                *out_first_destroy_errno = -ret;  /* capture first destroy errno (e.g. EPERM) */
-            /* ret == 1: skipped (ENOENT — socket already gone). */
+            /* Grow pending array if needed */
+            if (pending_count >= pending_cap) {
+                int new_cap = pending_cap ? pending_cap * 2 : 64;
+                pending_destroy_t *new_pending = realloc(pending, (size_t)new_cap * sizeof(*pending));
+                if (!new_pending) {
+                    free(pending);
+                    *out_error_code = ENOMEM;
+                    snprintf(out_error_msg, error_msg_size, "Failed to allocate pending destroy array");
+                    return -1;
+                }
+                pending = new_pending;
+                pending_cap = new_cap;
+            }
+            pending[pending_count].family = diag_msg->idiag_family;
+            pending[pending_count].id = diag_msg->id;
+            pending_count++;
         }
     }
 
+    /* Pipeline destroy: send all, then drain ACKs */
+    int p_killed = 0;
+    if (pending_count > 0) {
+        destroy_pending_sockets(kill_sock, pending, pending_count, &p_killed, out_first_destroy_errno);
+    }
+    free(pending);
+
     *out_found = found;
-    *out_killed = killed;
+    *out_killed = p_killed;
     return 0;
 }
 

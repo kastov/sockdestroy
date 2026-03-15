@@ -44,12 +44,10 @@ typedef struct { int fd; uint32_t seq; } netlink_sock_t;
 #endif
 
 /* Buffer and timeout constants */
-#define NETLINK_MAX_RECV_RETRIES 3    /* max sequence-retry attempts in netlink_recv_expected */
 #define NETLINK_RECV_TIMEOUT_SEC 3    /* SO_RCVTIMEO for dump and kill sockets */
-#define NETLINK_ACK_BUF_SIZE     256  /* ACK response buffer in destroy_one_socket */
 #define INET_DIAG_BC_MAX_LEN     256  /* max bytecode filter length */
 #define INET_DIAG_REQ_MAX_LEN    512  /* max dump request buffer length */
-#define NETLINK_RECV_BATCH_VLEN  8    /* recvmmsg batch size for dump path */
+#define NETLINK_RECV_BATCH_VLEN  8    /* recvmmsg batch size */
 
 /* Address families */
 #ifndef AF_INET
@@ -146,11 +144,6 @@ int netlink_send(netlink_sock_t *ns, struct nlmsghdr *nlh);
 
 /* Receive into buffer. Returns bytes received, or -errno on error. */
 ssize_t netlink_recv(netlink_sock_t *ns, void *buf, size_t buflen);
-
-/* Receive a netlink message, validating the sequence number.
- * Discards messages that don't match the expected sequence.
- * Returns bytes received on success, -errno on error. */
-ssize_t netlink_recv_expected(netlink_sock_t *ns, void *buf, size_t buflen, uint32_t expected_seq);
 
 #endif /* UNSUPPORTED_PLATFORM */
 #endif /* SOCKDESTROY_NETLINK_H */

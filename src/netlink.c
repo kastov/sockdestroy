@@ -8,7 +8,8 @@
 #include <limits.h>
 #include <sys/socket.h>
 
-/* Keep ACK path simple/synchronous; batching is mainly for dump responses. */
+/* Minimum buffer size to enable the recvmmsg batch path.
+ * Smaller buffers use the simpler single-message recvmsg path. */
 #define NETLINK_BATCH_MIN_BUFLEN 1024
 
 /* Single-message receive with truncation-safe peek+consume semantics. */
@@ -258,21 +259,6 @@ ssize_t netlink_recv(netlink_sock_t *ns, void *buf, size_t buflen) {
     }
 
     return netlink_pop_batch(ns, buf, buflen);
-}
-
-ssize_t netlink_recv_expected(netlink_sock_t *ns, void *buf, size_t buflen, uint32_t expected_seq) {
-    for (int attempts = 0; attempts < NETLINK_MAX_RECV_RETRIES; attempts++) {
-        ssize_t len = netlink_recv(ns, buf, buflen);
-        if (len < 0)
-            return len;
-
-        struct nlmsghdr *nlh = (struct nlmsghdr *)buf;
-        if (NLMSG_OK(nlh, (int)len) && nlh->nlmsg_seq == expected_seq)
-            return len;
-        /* Wrong sequence — discard and retry */
-    }
-    /* Retry limit exceeded: sequence mismatch — protocol error, not a timeout */
-    return -EPROTO;
 }
 
 #endif /* UNSUPPORTED_PLATFORM */
