@@ -23,6 +23,37 @@ static napi_value has_cap_net_admin_binding(napi_env env, napi_callback_info inf
 
 #else /* Linux implementation */
 
+/* Reject a deferred promise with a string error message.
+ * Falls back to rejecting with undefined if error object creation fails (deep OOM). */
+static void reject_with_message(napi_env env, napi_deferred deferred, const char *msg) {
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    napi_value err_msg, error;
+    if (napi_create_string_utf8(env, msg, NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
+        napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
+        napi_reject_deferred(env, deferred, error);
+    } else {
+        napi_reject_deferred(env, deferred, undefined);
+    }
+}
+
+/* Reject with a string error message and an errno property on the error object. */
+static void reject_with_errno(napi_env env, napi_deferred deferred, const char *msg, int err_code) {
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    napi_value err_msg, error;
+    if (napi_create_string_utf8(env, msg, NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
+        napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
+        napi_value code_val;
+        if (napi_create_int32(env, err_code, &code_val) == napi_ok) {
+            napi_set_named_property(env, error, "errno", code_val);
+        }
+        napi_reject_deferred(env, deferred, error);
+    } else {
+        napi_reject_deferred(env, deferred, undefined);
+    }
+}
+
 /* Async worker data */
 typedef struct {
     napi_async_work work;
@@ -43,33 +74,14 @@ static void kill_execute(napi_env env, void *data) {
 /* Complete in main thread — resolve/reject the promise */
 static void kill_complete(napi_env env, napi_status status, void *data) {
     kill_work_t *w = (kill_work_t *)data;
-    napi_value undefined;
-    napi_get_undefined(env, &undefined);
 
     if (status != napi_ok) {
         const char *msg = (status == napi_cancelled)
             ? "Operation cancelled"
             : "Async operation failed";
-        napi_value err_msg, error;
-        if (napi_create_string_utf8(env, msg, NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
-            napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
-            napi_reject_deferred(env, w->deferred, error);
-        } else {
-            /* Fallback: reject with undefined to avoid unsettled promise */
-            napi_reject_deferred(env, w->deferred, undefined);
-        }
+        reject_with_message(env, w->deferred, msg);
     } else if (w->result.error_code != 0) {
-        napi_value err_msg, error;
-        if (napi_create_string_utf8(env, w->result.error_msg, NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
-            napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
-            napi_value code_val;
-            if (napi_create_int32(env, w->result.error_code, &code_val) == napi_ok) {
-                napi_set_named_property(env, error, "errno", code_val);
-            }
-            napi_reject_deferred(env, w->deferred, error);
-        } else {
-            napi_reject_deferred(env, w->deferred, undefined);
-        }
+        reject_with_errno(env, w->deferred, w->result.error_msg, w->result.error_code);
     } else {
         napi_value result_obj;
         if (napi_create_object(env, &result_obj) == napi_ok) {
@@ -86,25 +98,12 @@ static void kill_complete(napi_env env, napi_status status, void *data) {
                 napi_resolve_deferred(env, w->deferred, result_obj);
             } else {
                 /* Partial object — reject with error rather than resolve with incomplete data */
-                napi_value err_msg, error;
-                if (napi_create_string_utf8(env, "Failed to set result properties", NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
-                    napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
-                    napi_reject_deferred(env, w->deferred, error);
-                } else {
-                    napi_reject_deferred(env, w->deferred, undefined);
-                }
+                reject_with_message(env, w->deferred, "Failed to set result properties");
             }
         } else {
             /* OOM: reject rather than resolve with undefined (resolve would crash callers
                who destructure { killed, found } from the result) */
-            napi_value err_msg, error;
-            if (napi_create_string_utf8(env, "Failed to create result object", NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
-                napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
-                napi_reject_deferred(env, w->deferred, error);
-            } else {
-                /* Deep OOM: reject with undefined as absolute last resort */
-                napi_reject_deferred(env, w->deferred, undefined);
-            }
+            reject_with_message(env, w->deferred, "Failed to create result object");
         }
     }
 
@@ -218,19 +217,10 @@ static napi_value kill_sockets_binding(napi_env env, napi_callback_info info) {
         goto cleanup;
     }
 
-    napi_value undefined;
-    napi_get_undefined(env, &undefined);
-
     /* Create async work */
     work_data = (kill_work_t *)calloc(1, sizeof(kill_work_t));
     if (!work_data) {
-        napi_value err_msg, error;
-        if (napi_create_string_utf8(env, "Failed to allocate memory for async work", NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
-            napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
-            napi_reject_deferred(env, deferred, error);
-        } else {
-            napi_reject_deferred(env, deferred, undefined);
-        }
+        reject_with_message(env, deferred, "Failed to allocate memory for async work");
         free(src_ip);
         free(dst_ip);
         return promise;
@@ -244,13 +234,7 @@ static napi_value kill_sockets_binding(napi_env env, napi_callback_info info) {
     napi_create_string_utf8(env, "killSockets", NAPI_AUTO_LENGTH, &resource_name);
 
     if (napi_create_async_work(env, NULL, resource_name, kill_execute, kill_complete, work_data, &work_data->work) != napi_ok) {
-        napi_value err_msg, error;
-        if (napi_create_string_utf8(env, "Failed to create async work", NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
-            napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
-            napi_reject_deferred(env, deferred, error);
-        } else {
-            napi_reject_deferred(env, deferred, undefined);
-        }
+        reject_with_message(env, deferred, "Failed to create async work");
         free(src_ip);
         free(dst_ip);
         free(work_data);
@@ -259,13 +243,7 @@ static napi_value kill_sockets_binding(napi_env env, napi_callback_info info) {
 
     if (napi_queue_async_work(env, work_data->work) != napi_ok) {
         napi_delete_async_work(env, work_data->work);
-        napi_value err_msg, error;
-        if (napi_create_string_utf8(env, "Failed to queue async work", NAPI_AUTO_LENGTH, &err_msg) == napi_ok &&
-            napi_create_error(env, NULL, err_msg, &error) == napi_ok) {
-            napi_reject_deferred(env, deferred, error);
-        } else {
-            napi_reject_deferred(env, deferred, undefined);
-        }
+        reject_with_message(env, deferred, "Failed to queue async work");
         free(src_ip);
         free(dst_ip);
         free(work_data);
